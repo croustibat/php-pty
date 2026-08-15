@@ -1,15 +1,21 @@
 {
-    "name": "croustibat/pty",
-    "description": "Pseudo-terminals in pure PHP. No extension to compile, no C companion library — just FFI and pcntl. macOS and Linux.",
-    "keywords": ["pty", "pseudo-terminal", "terminal", "ffi", "pcntl", "tty", "cli"],
+    "name": "croustibat/php-pty",
+    "description": "node-pty for PHP. Pseudo-terminals in pure PHP — no extension to compile, no C companion library, no Node. Just FFI and pcntl. macOS and Linux.",
+    "keywords": ["pty", "pseudo-terminal", "terminal", "node-pty", "ffi", "pcntl", "tty", "cli", "tui"],
     "type": "library",
     "license": "MIT",
+    "homepage": "https://github.com/croustibat/php-pty",
     "authors": [
         {
             "name": "Baptiste Bouillot",
-            "email": "bbouillot@gmail.com"
+            "email": "bbouillot@gmail.com",
+            "homepage": "https://github.com/croustibat"
         }
     ],
+    "support": {
+        "issues": "https://github.com/croustibat/php-pty/issues",
+        "source": "https://github.com/croustibat/php-pty"
+    },
     "require": {
         "php": "^8.2",
         "ext-ffi": "*",

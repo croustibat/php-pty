@@ -1,7 +1,15 @@
-# croustibat/pty
+# php-pty
 
-Pseudo-terminals in pure PHP. No extension to compile, no companion C library —
-just `ext-ffi` and `ext-pcntl`. macOS and Linux.
+[![tests](https://github.com/croustibat/php-pty/actions/workflows/tests.yml/badge.svg)](https://github.com/croustibat/php-pty/actions/workflows/tests.yml)
+[![licence](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+
+**[node-pty](https://github.com/microsoft/node-pty) for PHP.** Pseudo-terminals
+in pure PHP — no extension to compile, no companion C library, and no Node.
+Just `ext-ffi` and `ext-pcntl`. macOS and Linux.
+
+```bash
+composer require croustibat/php-pty
+```
 
 ```php
 use Croustibat\Pty\Pty;
@@ -23,8 +31,22 @@ but it hands you no control over the window size. No `ioctl`, so no
 `TIOCSWINSZ`, so no `SIGWINCH`. Interactive TUIs render at whatever geometry
 they guess and never learn they were resized.
 
-That gap is why terminal-driving PHP projects reach for Node's `node-pty`.
-This package closes it without leaving PHP.
+That single gap is why PHP projects that need to drive a terminal end up
+shipping a Node sidecar just for `node-pty`. This package closes it without
+leaving PHP.
+
+### Compared to node-pty
+
+|  | node-pty | php-pty |
+|---|---|---|
+| Runtime | Node | PHP CLI |
+| Install | native module, needs a toolchain | `composer require`, nothing compiled |
+| Platforms | macOS, Linux, Windows (ConPTY) | macOS, Linux |
+| Concurrency | libuv event loop | your own `stream_select()` loop |
+| Scope | pty + spawn | pty + spawn |
+
+Windows is the honest gap: it has no pty. ConPTY is a different API and would
+be a different package.
 
 **What you get:** a real pty, a real controlling terminal (`login_tty`, so job
 control and Ctrl-C work), a settable and resettable window size, and a
