@@ -1,0 +1,43 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # macOS is not optional here. The ioctl ABI trap this package exists to
+    # avoid only manifests on Darwin arm64 — on Linux x86-64 the broken and
+    # correct declarations behave identically, so ubuntu alone would give a
+    # false green.
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        php: ['8.2', '8.3', '8.4']
+
+    name: PHP ${{ matrix.php }} · ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: ffi, pcntl, posix
+          ini-values: ffi.enable=1
+          coverage: none
+
+      - name: Report the runner architecture
+        run: |
+          php -r 'printf("PHP %s · %s · %s%s", PHP_VERSION, PHP_OS, php_uname("m"), PHP_EOL);'
+
+      - name: Install dependencies
+        run: composer update --prefer-dist --no-interaction --no-progress
+
+      - name: Run tests
+        run: vendor/bin/pest --colors=always

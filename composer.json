@@ -1,0 +1,47 @@
+{
+    "name": "croustibat/pty",
+    "description": "Pseudo-terminals in pure PHP. No extension to compile, no C companion library — just FFI and pcntl. macOS and Linux.",
+    "keywords": ["pty", "pseudo-terminal", "terminal", "ffi", "pcntl", "tty", "cli"],
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Baptiste Bouillot",
+            "email": "bbouillot@gmail.com"
+        }
+    ],
+    "require": {
+        "php": "^8.2",
+        "ext-ffi": "*",
+        "ext-pcntl": "*",
+        "ext-posix": "*"
+    },
+    "require-dev": {
+        "pestphp/pest": "^3.0",
+        "laravel/pint": "^1.18",
+        "phpstan/phpstan": "^2.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Croustibat\\Pty\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Croustibat\\Pty\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "pest",
+        "lint": "pint",
+        "stan": "phpstan analyse"
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
