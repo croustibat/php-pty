@@ -11,6 +11,9 @@ Just `ext-ffi` and `ext-pcntl`. macOS and Linux.
 composer require croustibat/php-pty
 ```
 
+> The package is `croustibat/php-pty`; the namespace is `Croustibat\Pty\`.
+> Hyphens are not legal in PHP identifiers, so the two never match exactly.
+
 ```php
 use Croustibat\Pty\Pty;
 
@@ -166,6 +169,13 @@ Out of scope, deliberately:
   different package.
 - **Terminal emulation.** Bring your own — this hands you bytes.
 - **Session daemons, scrollback, multiplexing.** Build them on top.
+
+## Security
+
+FFI, `pcntl_fork()` and command execution are all dangerous by design here.
+[`SECURITY.md`](SECURITY.md) spells out the threat model and how to report a
+vulnerability privately. Short version: never pass user-controlled input as the
+executable, and do not work around the CLI-only check.
 
 ## Credits
 
