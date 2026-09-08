@@ -158,8 +158,27 @@ Two related traps, both worth knowing before you write your own relay:
 | `Session::winSize(): array` | `[rows, cols]` |
 | `Session::ttyName(): string` | e.g. `/dev/ttys018` |
 | `Session::pid()`, `isRunning()`, `signal()`, `terminate()`, `kill()` | |
-| `Session::wait(): int` | Blocks; `128 + signal` when killed |
+| `Session::wait(?float $timeout = 10.0): int` | Exit code, `128 + signal` when killed; `-1` on timeout or unavailable status. `null` waits indefinitely |
 | `Session::close()` | Closes the master; the child gets `SIGHUP` |
+
+Rows and columns must be between **1 and 65535**, both at spawn and resize.
+An invalid working directory or executable is rejected before allocating a
+terminal. Explicit relative executable paths are resolved against `cwd` when
+provided. If the working directory disappears before the child enters it, the
+child exits with code 127 without executing the command.
+
+`write()` returns the number of bytes accepted before its deadline; on a short
+write, retain and retry the remaining suffix. Timeouts must be finite and
+non-negative. `write(timeout: 0)` returns immediately without writing;
+`wait(timeout: 0)` makes one non-blocking status check. A timed-out `wait()`
+does not stop the child. If another process manager has already reaped the
+child, `wait()` returns `-1` and `exitCode()` remains `null`.
+
+`close()` is idempotent and releases both the original master descriptor and
+the PHP stream's duplicate. Newly spawned children close their inherited
+copies of other php-pty sessions. Closing a session does not reap its process:
+call `wait()` afterwards to collect its status. A child can handle or ignore
+`SIGHUP`; use `terminate()` or `kill()` when explicit termination is needed.
 
 ## Scope
 

@@ -1,0 +1,21 @@
+<?php
+
+namespace FFI;
+
+/**
+ * Analysis-only model of the int and struct winsize fields used by Pty::CDEF.
+ * Scanned, never executed: CData implements property access in native code,
+ * which PHPStan cannot infer from reflection or magic-property annotations.
+ */
+final class CData
+{
+    public int $cdata;
+
+    public int $ws_row;
+
+    public int $ws_col;
+
+    public int $ws_xpixel;
+
+    public int $ws_ypixel;
+}

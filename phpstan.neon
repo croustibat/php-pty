@@ -2,3 +2,7 @@ parameters:
     level: 6
     paths:
         - src
+    stubFiles:
+        - phpstan/ffi.stub
+    scanFiles:
+        - phpstan/cdata.stub

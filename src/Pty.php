@@ -60,6 +60,7 @@ final class Pty
         int login_tty(int fd);
         int ioctl(int fd, unsigned long request, ...);
         int close(int fd);
+        void _exit(int status);
         C;
 
     private static ?FFI $ffi = null;
@@ -67,8 +68,8 @@ final class Pty
     /**
      * Spawns a command attached to a fresh pseudo-terminal.
      *
-     * @param  list<string>          $command Argv. The first element is resolved against PATH.
-     * @param  array<string,string>|null $env  Child environment. Null inherits the current one.
+     * @param  list<string>  $command  Argv. The first element is resolved against PATH.
+     * @param  array<string,string>|null  $env  Child environment. Null inherits the current one.
      */
     public static function spawn(
         array $command,
@@ -81,6 +82,27 @@ final class Pty
             throw PtyException::executableNotFound('');
         }
 
+        self::validateWinSize($rows, $cols);
+
+        if ($cwd !== null && (! is_dir($cwd) || ! is_executable($cwd))) {
+            throw PtyException::invalidWorkingDirectory($cwd);
+        }
+
+        // Resolve before allocating descriptors: a rejected command must not
+        // leave an open master and slave behind.
+        $directory = $cwd ?? getcwd();
+        if ($directory === false) {
+            throw PtyException::invalidWorkingDirectory('.');
+        }
+        if (! str_starts_with($directory, '/')) {
+            $parent = getcwd();
+            if ($parent === false) {
+                throw PtyException::invalidWorkingDirectory($directory);
+            }
+            $directory = $parent.'/'.$directory;
+        }
+        $executable = self::resolve($command[0], $directory);
+        $environment = $env ?? self::currentEnvironment();
         $ffi = self::ffi();
 
         // The initial size is passed straight to openpty(), which is NOT
@@ -110,12 +132,27 @@ final class Pty
         $slaveFd = $slave->cdata;
         $ttyName = FFI::string($name);
 
-        $executable = self::resolve($command[0]);
-        $environment = $env ?? self::currentEnvironment();
+        // php://fd duplicates the descriptor. Open it before forking so a
+        // failed duplication cannot leave a running child behind.
+        $stream = @fopen("php://fd/{$masterFd}", 'r+');
+
+        if ($stream === false) {
+            $ffi->close($masterFd);
+            $ffi->close($slaveFd);
+
+            throw PtyException::masterUnreadable($masterFd);
+        }
+
+        stream_set_blocking($stream, false);
+        // Disable PHP's hidden flush loop: a full PTY must return control to
+        // Session::write() so its deadline can be enforced.
+        stream_set_write_buffer($stream, 0);
+        stream_set_read_buffer($stream, 0);
 
         $pid = pcntl_fork();
 
         if ($pid === -1) {
+            fclose($stream);
             $ffi->close($masterFd);
             $ffi->close($slaveFd);
 
@@ -127,39 +164,33 @@ final class Pty
             // login_tty() does setsid + TIOCSCTTY + dup2 onto 0/1/2. Without
             // it the child has a tty but no *controlling* tty: no job control,
             // no signal delivery on Ctrl-C, and interactive TUIs misbehave.
-            $ffi->close($masterFd);
+            try {
+                fclose($stream);
+                $ffi->close($masterFd);
+                Session::closeInheritedSessions();
 
-            if ($ffi->login_tty($slaveFd) !== 0) {
-                exit(127);
+                if ($ffi->login_tty($slaveFd) !== 0) {
+                    $ffi->_exit(127);
+                }
+
+                // The directory can disappear after parent-side validation.
+                // Never execute the command in an unintended working directory.
+                if ($cwd !== null && ! @chdir($cwd)) {
+                    $ffi->_exit(127);
+                }
+
+                @pcntl_exec($executable, array_slice($command, 1), $environment);
+            } catch (Throwable) {
+                // An inherited error handler can turn an exec warning into an
+                // exception. It must never unwind into the caller in the child.
             }
 
-            if ($cwd !== null) {
-                @chdir($cwd);
-            }
-
-            pcntl_exec($executable, array_slice($command, 1), $environment);
-
-            exit(127); // only reached if exec failed
+            // Do not run inherited PHP shutdown callbacks or destructors.
+            $ffi->_exit(127);
         }
 
         // ---- parent ----
         $ffi->close($slaveFd);
-
-        $stream = @fopen("php://fd/{$masterFd}", 'r+');
-
-        if ($stream === false) {
-            throw PtyException::masterUnreadable($masterFd);
-        }
-
-        stream_set_blocking($stream, false);
-
-        // PHP buffers stream writes in userspace and retries the flush itself.
-        // On a pty master whose buffer is full that retry loop is invisible to
-        // us and cannot be interrupted — fwrite() simply does not return. Set
-        // the buffer to 0 so every fwrite() maps to exactly one write(2) and
-        // hands EAGAIN straight back.
-        stream_set_write_buffer($stream, 0);
-        stream_set_read_buffer($stream, 0);
 
         return new Session($pid, $stream, $masterFd, $ttyName);
     }
@@ -172,6 +203,7 @@ final class Pty
      */
     public static function setWinSize(int $fd, int $rows, int $cols): void
     {
+        self::validateWinSize($rows, $cols);
         $ffi = self::ffi();
 
         $winsize = $ffi->new('struct winsize');
@@ -195,7 +227,9 @@ final class Pty
         $ffi = self::ffi();
 
         $winsize = $ffi->new('struct winsize');
-        $ffi->ioctl($fd, self::TIOCGWINSZ, FFI::addr($winsize));
+        if ($ffi->ioctl($fd, self::TIOCGWINSZ, FFI::addr($winsize)) !== 0) {
+            throw PtyException::winSizeFailed();
+        }
 
         return [$winsize->ws_row, $winsize->ws_col];
     }
@@ -248,10 +282,20 @@ final class Pty
     }
 
     /** Resolves a binary against PATH without shelling out. */
-    private static function resolve(string $binary): string
+    private static function resolve(string $binary, string $cwd): string
     {
         if (str_contains($binary, '/')) {
-            return $binary;
+            $candidate = str_starts_with($binary, '/')
+                ? $binary
+                : rtrim($cwd, '/').'/'.$binary;
+
+            if (is_file($candidate) && is_executable($candidate)) {
+                // Keep executable symlinks: argv[0] selects BusyBox applets
+                // and the invocation path identifies Python virtualenvs.
+                return $candidate;
+            }
+
+            throw PtyException::executableNotFound($binary);
         }
 
         foreach (explode(':', (string) getenv('PATH')) as $directory) {
@@ -259,6 +303,9 @@ final class Pty
                 continue;
             }
 
+            if (! str_starts_with($directory, '/')) {
+                $directory = rtrim($cwd, '/').'/'.$directory;
+            }
             $candidate = rtrim($directory, '/').'/'.$binary;
 
             if (is_file($candidate) && is_executable($candidate)) {
@@ -272,8 +319,13 @@ final class Pty
     /** @return array<string,string> */
     private static function currentEnvironment(): array
     {
-        $env = getenv();
+        return getenv();
+    }
 
-        return is_array($env) ? $env : [];
+    private static function validateWinSize(int $rows, int $cols): void
+    {
+        if ($rows < 1 || $rows > 65535 || $cols < 1 || $cols > 65535) {
+            throw PtyException::invalidWinSize($rows, $cols);
+        }
     }
 }

@@ -31,26 +31,29 @@ use Croustibat\Pty\Pty;
  * why CI must run on macos-latest and not only ubuntu-latest.
  */
 it('resizes through ioctl and the child agrees', function (): void {
-    $session = Pty::spawn(['/bin/sh', '-c', 'sleep 0.6; stty size'], rows: 24, cols: 80);
+    $session = Pty::spawn(['/bin/sh', '-c', 'stty -echo; echo READY; read -r line; stty size'], rows: 24, cols: 80);
 
-    usleep(150_000);
-    $session->resize(30, 120);
-
-    $output = drain($session, 3.0, '/\d+\s+\d+/');
-    $session->wait();
-    $session->close();
+    try {
+        expect(drain($session, 3.0, '/READY/'))->toContain('READY');
+        $session->resize(30, 120);
+        $session->write("measure\n");
+        $output = drain($session, 3.0, '/\d+\s+\d+/');
+        expect($session->wait(2.0))->toBe(0);
+    } finally {
+        stopSession($session);
+    }
 
     $size = parseSttySize($output);
 
     expect($size)->not->toBeNull(
-        "The child printed nothing usable. Raw output: ".var_export($output, true)
+        'The child printed nothing usable. Raw output: '.var_export($output, true)
     );
 
     expect($size)->toBe(
         [30, 120],
         'Window size is wrong after ioctl(TIOCSWINSZ). If this reads something '
-        . 'like [0, 2046], the ioctl declaration in Pty::CDEF has lost its `...` '
-        . 'and is being called with the wrong ABI.'
+        .'like [0, 2046], the ioctl declaration in Pty::CDEF has lost its `...` '
+        .'and is being called with the wrong ABI.'
     );
 });
 

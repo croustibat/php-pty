@@ -35,7 +35,7 @@ of them are bugs, and all of them are your responsibility to contain.
 
 `ext-ffi` executes arbitrary C with no memory safety. A wrong struct layout or
 a bad pointer is a memory corruption, not an exception. The library only binds
-`openpty`, `login_tty`, `ioctl` and `close`, and the declarations are covered
+`openpty`, `login_tty`, `ioctl`, `close` and `_exit`, and the declarations are covered
 by tests — including `tests/AbiRegressionTest.php`, which exists because a
 wrong `ioctl` declaration corrupts memory *while returning 0*.
 
@@ -47,7 +47,8 @@ not your biggest problem, but it is not for you either.
 `pcntl_fork()` duplicates everything: open database connections, Redis sockets,
 file handles, credentials in memory, and any secret your process is holding.
 The child then `exec`s, so the exposure window is short — but it exists, and if
-`exec` fails the child briefly runs your code with a copy of your state.
+`exec` fails the child exits with code 127 using `_exit`, without running
+inherited PHP shutdown callbacks or destructors.
 
 The library refuses to load outside the CLI SAPI for this reason. Do not work
 around that check.

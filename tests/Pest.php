@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Croustibat\Pty\Pty;
 use Croustibat\Pty\Session;
 
 /**
@@ -49,4 +50,45 @@ function parseSttySize(string $output): ?array
     }
 
     return [(int) $matches[1], (int) $matches[2]];
+}
+
+function readySession(): Session
+{
+    $session = Pty::spawn(['/bin/sh', '-c', 'stty -echo; printf "READY\n"; exec cat']);
+
+    try {
+        expect(drain($session, 3.0, '/READY/'))->toContain('READY');
+    } catch (Throwable $error) {
+        stopSession($session);
+        throw $error;
+    }
+
+    return $session;
+}
+
+function stopSession(Session $session): void
+{
+    if ($session->isRunning()) {
+        $session->kill();
+    }
+    $session->wait(2.0);
+    $session->close();
+}
+
+/** @return list<int> */
+function openDescriptors(): array
+{
+    static $ffi;
+    $ffi ??= FFI::cdef('int fcntl(int fd, int cmd, ...);');
+    $open = [];
+
+    // All descriptors allocated by these small test processes are below 1024.
+    // F_GETFD is 1 on both supported platforms; this creates no descriptors.
+    for ($fd = 0; $fd < 1024; $fd++) {
+        if ($ffi->fcntl($fd, 1) !== -1) {
+            $open[] = $fd;
+        }
+    }
+
+    return $open;
 }

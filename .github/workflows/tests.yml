@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        php: ['8.2', '8.3', '8.4']
+        php: ['8.2', '8.3', '8.4', '8.5']
 
     name: PHP ${{ matrix.php }} · ${{ matrix.os }}
 
@@ -36,8 +36,28 @@ jobs:
         run: |
           php -r 'printf("PHP %s · %s · %s%s", PHP_VERSION, PHP_OS, php_uname("m"), PHP_EOL);'
 
+      - name: Require Apple Silicon for the ABI regression
+        if: runner.os == 'macOS'
+        run: test "$(uname -m)" = arm64
+
       - name: Install dependencies
         run: composer update --prefer-dist --no-interaction --no-progress
 
       - name: Run tests
+        timeout-minutes: 5
         run: vendor/bin/pest --colors=always
+
+  quality:
+    name: Static analysis and style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: ffi, pcntl, posix
+          coverage: none
+      - run: composer update --prefer-dist --no-interaction --no-progress
+      - run: composer validate --strict
+      - run: vendor/bin/phpstan analyse --no-progress
+      - run: vendor/bin/pint --test
