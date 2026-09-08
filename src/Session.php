@@ -182,7 +182,11 @@ final class Session
         return $this->signal(SIGKILL);
     }
 
-    /** Non-blocking liveness check. Reaps the child if it has exited. */
+    /**
+     * Non-blocking liveness check. Reaps the child if it has exited.
+     *
+     * @phpstan-impure
+     */
     public function isRunning(): bool
     {
         if ($this->reaped) {
@@ -214,6 +218,8 @@ final class Session
      * the child never dies — and a library call that can wedge the caller with
      * no escape is a defect, however unlikely the case. Pass `null` for the
      * old blocking behaviour, explicitly.
+     *
+     * @phpstan-impure
      *
      * @return int Exit code, `128 + signal` when killed, or -1 on timeout/unavailable status.
      */

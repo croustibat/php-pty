@@ -11,21 +11,57 @@ Just `ext-ffi` and `ext-pcntl`. macOS and Linux.
 composer require croustibat/php-pty
 ```
 
-> The package is `croustibat/php-pty`; the namespace is `Croustibat\Pty\`.
-> Hyphens are not legal in PHP identifiers, so the two never match exactly.
+The namespace is `Croustibat\Pty\`. The package requires PHP CLI with FFI,
+pcntl and posix; it has no runtime Composer dependencies.
 
-```php
-use Croustibat\Pty\Pty;
+## Try it
 
-$session = Pty::spawn(['claude', '--resume'], rows: 30, cols: 120);
+From a checkout, install dependencies and run the quickstart:
 
-$session->write("hello\n");
-$session->resize(40, 100);          // real TIOCSWINSZ, real SIGWINCH
-echo $session->read();
-
-$session->stream();                 // non-blocking, for stream_select()
-$session->wait();                   // exit code
+```bash
+git clone https://github.com/croustibat/php-pty.git
+cd php-pty
+composer install
+php examples/quickstart.php
 ```
+
+It prints `30 120`: the terminal dimensions reported by the child process.
+No API key, external service or additional application is needed.
+
+Then open an interactive shell:
+
+```bash
+php examples/interactive.php
+```
+
+Inside it, run `stty size`, resize your terminal window and run `stty size`
+again. Type `exit` or press Ctrl-D at an empty shell prompt to leave. Ctrl-C
+is forwarded through the PTY to the child terminal's foreground process group.
+Your original terminal settings are restored when the relay finishes.
+
+Pass a command as separate arguments after `--`:
+
+```bash
+php examples/interactive.php -- /bin/sh
+php examples/interactive.php -- top
+php examples/multiple-sessions.php
+```
+
+| Example | What it demonstrates |
+|---|---|
+| [quickstart.php](examples/quickstart.php) | Spawn with a known size, drain output and collect the exit code |
+| [interactive.php](examples/interactive.php) | Keyboard relay, live resizing, bounded queues, partial writes and terminal restoration |
+| [multiple-sessions.php](examples/multiple-sessions.php) | One `stream_select()` loop reading two independently finishing commands |
+
+The interactive relay requires a terminal on both STDIN and STDOUT and the
+system `stty` command. It returns the child's exit code. It handles external
+SIGINT, SIGTERM, SIGHUP and SIGQUIT with cleanup; SIGKILL cannot be intercepted.
+The multiple-session example labels each output line with `fast` or `slow`;
+ordering between processes is intentionally not guaranteed.
+
+When installed with Composer in an application, the examples can also be run
+under `vendor/croustibat/php-pty/examples/`. Run them as standalone CLI scripts.
+They are reference implementations to adapt, not a public event-loop API.
 
 ## Why
 
@@ -64,6 +100,19 @@ a session daemon. This is the primitive, not the product.
 - `ext-ffi`, `ext-pcntl`, `ext-posix`
 - macOS or Linux
 
+## Troubleshooting
+
+- **Missing extension:** inspect `php -m` and `php --ini` for the CLI binary
+  actually running the example. Enabling an extension only in FPM is insufficient.
+- **FFI disabled:** try `php -d ffi.enable=1 examples/quickstart.php`. The
+  extension must still be installed. Do not run this library in a web request.
+- **Binding fails on Linux:** check the installed C runtime and availability
+  of `openpty` and `login_tty`. CI covers Ubuntu; Alpine/musl is not in the matrix.
+- **No output yet:** `read()` is non-blocking; follow the select loop in the
+  quickstart instead of assuming the child has already produced output.
+- **A manually killed relay left the terminal unusable:** run `stty sane` in
+  that terminal. Normal exit and handled signals restore the exact saved mode.
+
 ## Read this before you use it
 
 **`pcntl_fork()` duplicates the entire process.** Every open PDO connection,
@@ -77,74 +126,26 @@ discipline echoes your writes straight back to the master before the child has
 read anything. If you are measuring round-trip latency, you are measuring the
 kernel, not the child. Send `stty -echo` or set the termios flags yourself.
 
-## The `ioctl` ABI trap
+## Reading and writing
 
-This is the finding that made the package worth publishing.
+A PTY is a byte stream. `read()` is non-blocking: an empty string can mean
+there is no data yet. Wait for readiness with `stream_select()` and continue
+reading while the child is active. After it exits, drain any remaining output
+before closing the session. Waiting for exit before reading can block a child
+whose output is waiting to be consumed.
 
-`ioctl` is variadic in C: `int ioctl(int, unsigned long, ...)`. Nearly every
-PHP + FFI snippet on the web declares it with fixed arity:
+`write()` retries partial writes until its deadline and returns the number of
+bytes accepted. Keep `substr($payload, $written)` when the count is short.
+For full-duplex relays, interleave reads and writes and bound both queues, as
+[the interactive example](examples/interactive.php) does. A writable stream
+can still accept only part of a buffer. `write(timeout: 0)` sends no bytes.
 
-```c
-int ioctl(int fd, unsigned long request, void *arg);   /* wrong */
-```
+The terminal echoes input by default. Use `stty -echo` inside the child to
+turn echo off; use `stty raw -echo` for byte-oriented protocols. Changing the
+local terminal is a separate operation, and its settings must be restored.
 
-On Linux x86-64 that works, because the variadic and non-variadic ABIs coincide
-for integers and pointers. **On Darwin arm64 it does not.** Apple diverges from
-standard AAPCS64: every variadic argument is passed on the stack, while fixed
-arguments go in registers. libffi puts the pointer in a register, the kernel
-reads it off the stack, and `TIOCSWINSZ` copies from whatever address happened
-to be sitting there.
-
-The failure mode is the nasty kind — **`ioctl` returns `0`.** No errno, no
-exception. Just a silently wrong window size.
-
-Measured on PHP 8.5.8 / Darwin / arm64, asking for 30×120:
-
-| declaration | `stty size` in the child | return |
-|---|---|---|
-| `openpty(..., struct winsize *winp)` | `30 120` ✅ | 0 |
-| `int ioctl(int, unsigned long, void *)` | `0 2046` ❌ | **0** |
-| `int ioctl(int, unsigned long, ...)` | `30 120` ✅ | 0 |
-
-The fix is one line of `cdef`. `tests/AbiRegressionTest.php` guards it, and CI
-runs on `macos-latest` precisely because Ubuntu alone would give a false green.
-
-## Partial writes
-
-`fwrite()` on a pty master routinely writes fewer bytes than you asked for. Drop
-the return value and you drop the tail — and when the cut lands mid escape
-sequence, the terminal prints the remainder as literal text. A stray `7G` on
-screen where a cursor move was meant.
-
-This is not an edge case, it is the normal regime. Measured on PHP 8.5.8 /
-Darwin / arm64, pushing 1 MB through a pty master in 8 KB calls: **1 677
-`fwrite()` calls instead of the 128 a full write would need** — about 625 bytes
-accepted per call on average. Code that ignores the return value loses bytes
-thirteen times out of fourteen.
-
-There is a second, nastier layer. PHP buffers stream writes in userspace and
-retries the flush in a loop you cannot see or interrupt. On a pty master whose
-buffer is full, `fwrite()` then simply never returns, and no amount of
-application-level timeout will save you. `Pty::spawn()` sets
-`stream_set_write_buffer($stream, 0)` so every `fwrite()` maps to exactly one
-`write(2)` and hands `EAGAIN` straight back.
-
-`Session::write()` loops until the buffer is drained, under a deadline. The
-deadline is not paranoia: if the child stops reading — because it is blocked
-writing back to a master nobody drains, or because the line discipline is in
-canonical mode waiting for a newline that never comes — the buffer stays full
-forever and an unbounded loop hangs your process.
-
-Two related traps, both worth knowing before you write your own relay:
-
-- **`stty -echo` is not `stty raw`.** The first only silences the echo; the
-  line discipline stays canonical, holding at most `MAX_CANON` bytes while it
-  waits for a newline. Push half a megabyte with no `\n` through it and it
-  jams.
-- **Never write a large payload to a child that echoes it back unless you
-  drain as you go.** The master's output buffer fills, the child blocks
-  writing, so it stops reading, so your write blocks. Interleave with
-  `stream_select()` on both directions.
+The measured partial-write behaviour and the Darwin ARM64 variadic `ioctl`
+ABI regression are explained in [Implementation notes](docs/implementation-notes.md).
 
 ## API
 
@@ -195,6 +196,13 @@ FFI, `pcntl_fork()` and command execution are all dangerous by design here.
 [`SECURITY.md`](SECURITY.md) spells out the threat model and how to report a
 vulnerability privately. Short version: never pass user-controlled input as the
 executable, and do not work around the CLI-only check.
+
+## Contributing and releases
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local checks and the CI matrix.
+Changes not yet included in a tag are listed under **Unreleased** in the
+[CHANGELOG](CHANGELOG.md). Check that section when comparing `main` with an
+installed Composer version.
 
 ## Credits
 
