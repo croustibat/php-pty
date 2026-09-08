@@ -14,6 +14,9 @@ set_error_handler(function (int $severity, string $message): never {
 });
 
 $session = Pty::spawn([$argv[1]]);
+// Only the forked child should turn exec warnings into exceptions. Linux
+// can report EIO while the parent drains a PTY whose slave has closed.
+restore_error_handler();
 try {
     $exit = $session->wait(2.0);
     echo 'CHILD-OUTPUT:'.$session->read()."\n";
