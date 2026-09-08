@@ -39,34 +39,30 @@ it('gives the child a controlling terminal', function (): void {
 
 it('delivers SIGWINCH on resize', function (): void {
     $session = Pty::spawn(
-        ['/bin/sh', '-c', 'trap "echo GOT-WINCH" WINCH; sleep 2 & wait'],
+        ['/bin/sh', '-c', 'trap "echo GOT-WINCH" WINCH; echo READY; sleep 10 & wait'],
         rows: 24,
         cols: 80,
     );
 
-    usleep(300_000);
-    $session->resize(40, 100);
-
-    $output = drain($session, 2.0, '/GOT-WINCH/');
-    $session->kill();
-    $session->wait();
-    $session->close();
-
-    expect($output)->toContain('GOT-WINCH');
+    try {
+        expect(drain($session, 3.0, '/READY/'))->toContain('READY');
+        $session->resize(40, 100);
+        expect(drain($session, 2.0, '/GOT-WINCH/'))->toContain('GOT-WINCH');
+    } finally {
+        stopSession($session);
+    }
 });
 
 it('round-trips data through the pty', function (): void {
-    $session = Pty::spawn(['/bin/cat']);
-
-    usleep(200_000);
-    $session->write("hello pty\n");
-
-    $output = drain($session, 2.0, '/hello pty/');
-    $session->kill();
-    $session->wait();
-    $session->close();
-
-    expect($output)->toContain('hello pty');
+    $session = Pty::spawn(['/bin/sh', '-c', 'stty -echo; echo READY; IFS= read -r line; printf "REPLY:%s\n" "$line"']);
+    try {
+        expect(drain($session, 3.0, '/READY/'))->toContain('READY');
+        $session->write("hello pty\n");
+        expect(drain($session, 2.0, '/REPLY:hello pty/'))->toContain('REPLY:hello pty');
+        expect($session->wait(2.0))->toBe(0);
+    } finally {
+        stopSession($session);
+    }
 });
 
 it('reports the exit code', function (): void {

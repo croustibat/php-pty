@@ -1,0 +1,18 @@
+<?php
+
+// Analysis-only declarations matching Pty::CDEF. FFI exposes these symbols
+// dynamically; this file is never autoloaded or executed.
+namespace {
+    /**
+     * @method int openpty(\FFI\CData $master, \FFI\CData $slave, \FFI\CData $name, ?\FFI\CData $termios, \FFI\CData $size)
+     * @method int login_tty(int $fd)
+     * @method int ioctl(int $fd, int $request, \FFI\CData $argument)
+     * @method int close(int $fd)
+     * @method never _exit(int $status)
+     */
+    final class FFI {}
+}
+
+namespace FFI {
+    final class CData {}
+}

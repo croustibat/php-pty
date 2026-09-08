@@ -4,98 +4,70 @@ declare(strict_types=1);
 
 use Croustibat\Pty\Pty;
 
-/**
- * Guards Session::write() against partial writes.
- *
- * fwrite() on a pty master routinely writes fewer bytes than you asked for:
- * the kernel buffer is small and the reader may be slow. Code that ignores the
- * return value drops the tail silently. When the cut lands in the middle of an
- * escape sequence, the terminal renders the remainder as literal text — a
- * stray `7G` on screen where a cursor move was intended.
- *
- * Observed 2026-08-14 while relaying Claude Code through a pty.
- *
- * Two traps these tests exist to avoid, both hit while writing them:
- *
- *  1. `stty -echo` alone is NOT enough. It silences the echo but leaves the
- *     line discipline in canonical mode, where the input queue holds at most
- *     MAX_CANON bytes while it waits for a newline. Push half a megabyte with
- *     no `\n` and the queue jams. You need `raw`, which clears ICANON.
- *
- *  2. Never write a large payload to a child that echoes it back without
- *     draining as you go. The master's output buffer fills, the child blocks
- *     writing, so it stops reading, so your write blocks. Textbook deadlock.
- */
-it('writes large payloads completely', function (): void {
-    // `raw` clears ICANON (no MAX_CANON jam) and `-echo` stops the line
-    // discipline bouncing everything back. `cat > /dev/null` consumes without
-    // producing, so there is nothing to drain and nothing to deadlock on.
-    $session = Pty::spawn(['/bin/sh', '-c', 'stty raw -echo; exec cat > /dev/null']);
+it('delivers a large payload completely to the child', function (): void {
+    $payload = str_repeat("abcdefghij\n", 46_000);
+    $session = Pty::spawn([
+        '/bin/sh', '-c', 'stty raw -echo; exec "$@"', 'sh',
+        PHP_BINARY, __DIR__.'/Fixtures/receive.php', (string) strlen($payload),
+    ]);
 
-    usleep(400_000); // let stty apply before the first byte goes out
+    try {
+        expect(drain($session, 3.0, '/READY/'))->toContain('READY');
+        expect($session->write($payload, timeout: 10.0))->toBe(strlen($payload));
+        $receipt = 'RECEIVED:'.strlen($payload).':'.hash('sha256', $payload);
+        expect(drain($session, 3.0, '/RECEIVED:[0-9]+:[a-f0-9]{64}/'))->toContain($receipt);
+        expect($session->wait(2.0))->toBe(0);
+    } finally {
+        stopSession($session);
+    }
+});
 
-    $payload = str_repeat("abcdefghij\n", 46_000); // ~506 KB
+it('bounds a saturated write and can resume without dropping or duplicating bytes', function (): void {
+    $payload = str_repeat("\033[7Gabcdefghij\n", 150_000);
+    $session = Pty::spawn([
+        '/bin/sh', '-c', 'stty raw -echo; exec "$@"', 'sh',
+        PHP_BINARY, __DIR__.'/Fixtures/receive.php', (string) strlen($payload), 'wait',
+    ]);
 
-    $written = $session->write($payload, timeout: 10.0);
+    try {
+        expect(drain($session, 3.0, '/READY/'))->toContain('READY');
+        $start = hrtime(true);
+        $written = $session->write($payload, timeout: 0.05);
+        $elapsed = (hrtime(true) - $start) / 1e9;
 
-    $session->kill();
-    $session->wait();
-    $session->close();
+        expect($written)->toBeGreaterThan(0)->toBeLessThan(strlen($payload));
+        expect($elapsed)->toBeLessThan(1.0);
+        expect($session->signal(SIGUSR1))->toBeTrue();
+        expect($session->write(substr($payload, $written), timeout: 10.0))->toBe(strlen($payload) - $written);
 
-    expect($written)->toBe(
-        strlen($payload),
-        'Session::write() returned a short count, which means it stopped at a '
-        . 'partial write instead of looping. Escape sequences would be truncated.'
-    );
+        $receipt = 'RECEIVED:'.strlen($payload).':'.hash('sha256', $payload);
+        expect(drain($session, 3.0, '/RECEIVED:[0-9]+:[a-f0-9]{64}/'))->toContain($receipt);
+        expect($session->wait(2.0))->toBe(0);
+    } finally {
+        stopSession($session);
+    }
 });
 
 it('does not mangle escape sequences it writes', function (): void {
-    // Deliberately small. A pty is not a lossless pipe: saturate an echoing
-    // child and bytes go missing, which is a property of the kernel buffers
-    // and the scheduler, not of this package. Testing that would be testing
-    // the OS. What we promise is narrower and worth guarding: an escape
-    // sequence handed to write() arrives byte-for-byte, and write() reports
-    // the full length.
-    $session = Pty::spawn(['/bin/sh', '-c', 'stty raw -echo; exec cat']);
+    $session = Pty::spawn(['/bin/sh', '-c', 'stty raw -echo; printf "READY\n"; exec cat']);
 
-    usleep(400_000);
+    try {
+        expect(drain($session, 3.0, '/READY/'))->toContain('READY');
+        $payload = str_repeat('.', 512)."\033[7GMARKER\033[0m".str_repeat('.', 512);
+        expect($session->write($payload, timeout: 5.0))->toBe(strlen($payload));
 
-    $needle = "\033[7GMARKER\033[0m";
-    $payload = str_repeat('.', 512).$needle.str_repeat('.', 512);
-
-    $written = $session->write($payload, timeout: 5.0);
-
-    // Read until we have as many bytes as we sent — NOT until some marker
-    // shows up. Stopping on a marker that sits in the middle of the needle
-    // truncates the very thing being asserted.
-    $received = '';
-    $deadline = microtime(true) + 3.0;
-
-    while (microtime(true) < $deadline && strlen($received) < strlen($payload)) {
-        $read = [$session->stream()];
-        $write = [];
-        $except = [];
-
-        if (@stream_select($read, $write, $except, 0, 50_000) > 0) {
-            $received .= $session->read();
+        $received = '';
+        $deadline = microtime(true) + 3.0;
+        while (microtime(true) < $deadline && strlen($received) < strlen($payload)) {
+            $read = [$session->stream()];
+            $write = [];
+            $except = [];
+            if (stream_select($read, $write, $except, 0, 50_000) > 0) {
+                $received .= $session->read();
+            }
         }
+        expect($received)->toBe($payload);
+    } finally {
+        stopSession($session);
     }
-
-    $session->kill();
-    $session->wait();
-    $session->close();
-
-    expect($written)->toBe(strlen($payload), 'write() reported a short count.');
-
-    // Asserted in widening order so a failure localises itself: wrong length
-    // means bytes were dropped, wrong ESC count means the line discipline ate
-    // the escapes, and only then does the needle itself get checked.
-    //
-    // NOTE — do not pass a message to toContain(). It is variadic: every
-    // argument is treated as another needle to look for, so a "message"
-    // silently becomes a second assertion that can never pass. That mistake
-    // cost an hour of chasing phantom kernel bugs on 2026-08-14.
-    expect(strlen($received))->toBe(strlen($payload), 'Bytes were lost in the round trip.');
-    expect(substr_count($received, "\033"))->toBe(2, 'Escape bytes were stripped.');
-    expect(str_contains($received, $needle))->toBeTrue();
 });

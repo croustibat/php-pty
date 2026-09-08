@@ -12,7 +12,7 @@ final class PtyException extends RuntimeException
     {
         return new self(
             "The `{$name}` extension is required by croustibat/pty but is not loaded. "
-            . 'Check `php -m`; with Herd or Homebrew you may need to enable it in php.ini.'
+            .'Check `php -m`; with Herd or Homebrew you may need to enable it in php.ini.'
         );
     }
 
@@ -20,8 +20,8 @@ final class PtyException extends RuntimeException
     {
         return new self(
             'FFI is not usable in this SAPI. croustibat/pty only supports the CLI SAPI, '
-            . 'where `ffi.enable` defaults to true. Under FPM you would need `ffi.enable=preload`, '
-            . 'which this library does not support — see the README section on fork safety.'
+            .'where `ffi.enable` defaults to true. Under FPM you would need `ffi.enable=preload`, '
+            .'which this library does not support — see the README section on fork safety.'
         );
     }
 
@@ -29,7 +29,7 @@ final class PtyException extends RuntimeException
     {
         return new self(
             "croustibat/pty supports macOS and Linux; this platform reports `{$os}`. "
-            . 'Windows has no PTY: it exposes ConPTY, an unrelated API, and is explicitly out of scope.'
+            .'Windows has no PTY: it exposes ConPTY, an unrelated API, and is explicitly out of scope.'
         );
     }
 
@@ -37,8 +37,8 @@ final class PtyException extends RuntimeException
     {
         return new self(
             'Could not bind openpty/login_tty through FFI. '
-            . 'On Linux these live in libutil (install libutil / glibc dev headers are not needed, '
-            . 'but `libutil.so.1` must be present).'
+            .'On Linux these live in libutil (install libutil / glibc dev headers are not needed, '
+            .'but `libutil.so.1` must be present).'
         );
     }
 
@@ -70,5 +70,25 @@ final class PtyException extends RuntimeException
     public static function alreadyClosed(): self
     {
         return new self('This session has already been closed.');
+    }
+
+    public static function invalidWorkingDirectory(string $cwd): self
+    {
+        return new self("Working directory `{$cwd}` does not exist or cannot be entered.");
+    }
+
+    public static function invalidWinSize(int $rows, int $cols): self
+    {
+        return new self("Terminal dimensions must be between 1 and 65535; got {$rows}x{$cols}.");
+    }
+
+    public static function winSizeFailed(): self
+    {
+        return new self('ioctl(TIOCGWINSZ) failed while reading the terminal dimensions.');
+    }
+
+    public static function invalidTimeout(): self
+    {
+        return new self('Timeout must be finite and greater than or equal to zero.');
     }
 }

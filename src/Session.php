@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Croustibat\Pty;
 
+use WeakMap;
+
 /**
  * One process attached to one pseudo-terminal.
  *
@@ -12,6 +14,9 @@ namespace Croustibat\Pty;
  */
 final class Session
 {
+    /** @var WeakMap<self, true>|null Does not keep abandoned sessions alive. */
+    private static ?WeakMap $sessions = null;
+
     /** @var resource|null */
     private $stream;
 
@@ -31,6 +36,25 @@ final class Session
         private readonly string $ttyName,
     ) {
         $this->stream = $stream;
+        self::$sessions ??= new WeakMap;
+        self::$sessions[$this] = true;
+    }
+
+    /** @internal Close only the forked child's copies, before exec. */
+    public static function closeInheritedSessions(): void
+    {
+        if (self::$sessions !== null) {
+            $inherited = [];
+            foreach (self::$sessions as $session => $_) {
+                $inherited[] = $session;
+            }
+
+            // close() removes its entry. Snapshot keys first so deleting the
+            // current WeakMap entry cannot skip the next inherited session.
+            foreach ($inherited as $session) {
+                $session->close();
+            }
+        }
     }
 
     public function pid(): int
@@ -51,7 +75,7 @@ final class Session
      */
     public function stream()
     {
-        if ($this->stream === null) {
+        if (! is_resource($this->stream)) {
             throw PtyException::alreadyClosed();
         }
 
@@ -70,6 +94,7 @@ final class Session
      */
     public function write(string $data, float $timeout = 5.0): int
     {
+        self::validateTimeout($timeout);
         if ($data === '') {
             return 0;
         }
@@ -77,7 +102,7 @@ final class Session
         $stream = $this->stream();
         $total = 0;
         $length = strlen($data);
-        $deadline = microtime(true) + $timeout;
+        $deadline = hrtime(true) / 1_000_000_000 + $timeout;
 
         while ($total < $length) {
             // A bounded deadline is not belt-and-braces, it is required. If
@@ -86,7 +111,7 @@ final class Session
             // canonical mode and waiting for a newline that never comes — the
             // pty buffer stays full forever. Without this, write() hangs the
             // caller with no way out.
-            if (microtime(true) >= $deadline) {
+            if (hrtime(true) / 1_000_000_000 >= $deadline) {
                 break;
             }
 
@@ -98,7 +123,7 @@ final class Session
                 $write = [$stream];
                 $except = [];
 
-                $remaining = max(0.0, $deadline - microtime(true));
+                $remaining = max(0.0, $deadline - hrtime(true) / 1_000_000_000);
                 $seconds = (int) $remaining;
                 $microseconds = (int) (($remaining - $seconds) * 1_000_000);
 
@@ -129,9 +154,7 @@ final class Session
      */
     public function resize(int $rows, int $cols): void
     {
-        if ($this->stream === null) {
-            throw PtyException::alreadyClosed();
-        }
+        $this->stream();
 
         Pty::setWinSize($this->masterFd, $rows, $cols);
     }
@@ -139,16 +162,14 @@ final class Session
     /** @return array{0:int,1:int} [rows, cols] */
     public function winSize(): array
     {
-        if ($this->stream === null) {
-            throw PtyException::alreadyClosed();
-        }
+        $this->stream();
 
         return Pty::getWinSize($this->masterFd);
     }
 
     public function signal(int $signal): bool
     {
-        return posix_kill($this->pid, $signal);
+        return $this->isRunning() && posix_kill($this->pid, $signal);
     }
 
     public function terminate(): bool
@@ -169,12 +190,18 @@ final class Session
         }
 
         $status = 0;
-        $result = pcntl_waitpid($this->pid, $status, WNOHANG);
+        do {
+            $result = pcntl_waitpid($this->pid, $status, WNOHANG);
+        } while ($result === -1 && pcntl_get_last_error() === PCNTL_EINTR);
 
         if ($result === $this->pid) {
             $this->reap($status);
 
             return false;
+        }
+
+        if ($result === -1 && pcntl_get_last_error() === PCNTL_ECHILD) {
+            $this->reaped = true;
         }
 
         return $result === 0;
@@ -188,10 +215,14 @@ final class Session
      * no escape is a defect, however unlikely the case. Pass `null` for the
      * old blocking behaviour, explicitly.
      *
-     * @return int Exit code, `128 + signal` when killed, or -1 on timeout.
+     * @return int Exit code, `128 + signal` when killed, or -1 on timeout/unavailable status.
      */
     public function wait(?float $timeout = 10.0): int
     {
+        if ($timeout !== null) {
+            self::validateTimeout($timeout);
+        }
+
         if ($this->reaped) {
             return $this->exitCode ?? -1;
         }
@@ -199,15 +230,22 @@ final class Session
         $status = 0;
 
         if ($timeout === null) {
-            pcntl_waitpid($this->pid, $status);
-            $this->reap($status);
+            do {
+                $result = pcntl_waitpid($this->pid, $status);
+            } while ($result === -1 && pcntl_get_last_error() === PCNTL_EINTR);
+
+            if ($result === $this->pid) {
+                $this->reap($status);
+            } elseif ($result === -1 && pcntl_get_last_error() === PCNTL_ECHILD) {
+                $this->reaped = true;
+            }
 
             return $this->exitCode ?? -1;
         }
 
-        $deadline = microtime(true) + $timeout;
+        $deadline = hrtime(true) / 1_000_000_000 + $timeout;
 
-        while (microtime(true) < $deadline) {
+        do {
             $result = pcntl_waitpid($this->pid, $status, WNOHANG);
 
             if ($result === $this->pid) {
@@ -217,14 +255,20 @@ final class Session
             }
 
             if ($result === -1) {
-                // Already reaped elsewhere, or no such child.
-                $this->reaped = true;
+                if (pcntl_get_last_error() === PCNTL_ECHILD) {
+                    $this->reaped = true;
+                }
 
-                return $this->exitCode ?? -1;
+                if (pcntl_get_last_error() !== PCNTL_EINTR) {
+                    return -1;
+                }
             }
 
-            usleep(2_000);
-        }
+            $remaining = $deadline - hrtime(true) / 1_000_000_000;
+            if ($remaining > 0) {
+                usleep((int) min(2_000, $remaining * 1_000_000));
+            }
+        } while (hrtime(true) / 1_000_000_000 < $deadline);
 
         return -1;
     }
@@ -242,8 +286,14 @@ final class Session
     public function close(): void
     {
         if ($this->stream !== null) {
-            @fclose($this->stream);
+            if (is_resource($this->stream)) {
+                fclose($this->stream);
+            }
+
+            // php://fd owns a duplicate, not the original used by ioctl.
+            Pty::closeFd($this->masterFd);
             $this->stream = null;
+            unset(self::$sessions[$this]);
         }
     }
 
@@ -259,5 +309,12 @@ final class Session
         $this->exitCode = pcntl_wifexited($status)
             ? pcntl_wexitstatus($status)
             : (pcntl_wifsignaled($status) ? 128 + pcntl_wtermsig($status) : -1);
+    }
+
+    private static function validateTimeout(float $timeout): void
+    {
+        if (! is_finite($timeout) || $timeout < 0) {
+            throw PtyException::invalidTimeout();
+        }
     }
 }
