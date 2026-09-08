@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-08
+
 ### Added
 
 - Runnable quickstart, interactive terminal relay and multiple-session examples.
@@ -36,5 +38,6 @@
 - FFI-backed PTY creation, controlling terminals, resizing, non-blocking streams,
   bounded writes and process lifecycle methods for macOS and Linux.
 
-[Unreleased]: https://github.com/croustibat/php-pty/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/croustibat/php-pty/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/croustibat/php-pty/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/croustibat/php-pty/tree/v0.1.0
