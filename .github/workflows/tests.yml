@@ -16,8 +16,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
         php: ['8.2', '8.3', '8.4', '8.5']
+        include:
+          - os: macos-latest
+            php: '8.5'
 
     name: PHP ${{ matrix.php }} · ${{ matrix.os }}
 
