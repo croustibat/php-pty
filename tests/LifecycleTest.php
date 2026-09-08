@@ -235,7 +235,7 @@ it('preserves the invoked executable symlink', function (): void {
     $session = null;
     try {
         $session = Pty::spawn([$link, '-c', 'printf "%s" "$0"']);
-        expect(drain($session))->toBe($link);
+        expect(drain($session, 3.0, '#'.preg_quote($link, '#').'#'))->toBe($link);
         expect($session->wait(2.0))->toBe(0);
     } finally {
         if ($session !== null) {
@@ -251,7 +251,7 @@ it('resolves relative PATH entries against the child directory', function (): vo
     try {
         putenv('PATH=.');
         $session = Pty::spawn(['sh', '-c', 'printf "%s" "$0"'], cwd: '/bin');
-        expect(drain($session))->toBe('/bin/./sh');
+        expect(drain($session, 3.0, '#/bin/\./sh#'))->toBe('/bin/./sh');
         expect($session->wait(2.0))->toBe(0);
     } finally {
         if ($session !== null) {
@@ -268,7 +268,7 @@ it('does not run inherited PHP shutdown code when exec fails', function (): void
     $session = null;
     try {
         $session = Pty::spawn([PHP_BINARY, __DIR__.'/Fixtures/failed-exec.php', $executable]);
-        $output = drain($session, 3.0);
+        $output = drain($session, 3.0, '/SHUTDOWN/');
         expect($session->wait(2.0))->toBe(0);
         expect($output)->toContain('EXIT:127');
         // Only the outer PHP process may run its own shutdown callback.
@@ -289,7 +289,7 @@ it('honours the child working directory and literal arguments', function (): voi
         env: ['PTY_TEST' => 'environment-ok'],
     );
     try {
-        expect(drain($session))->toBe(realpath('/bin').'|a b;$(literal)|environment-ok');
+        expect(drain($session, 3.0, '/environment-ok/'))->toBe(realpath('/bin').'|a b;$(literal)|environment-ok');
         expect($session->wait(2.0))->toBe(0);
     } finally {
         stopSession($session);

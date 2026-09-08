@@ -8,11 +8,15 @@ use Croustibat\Pty\PtyException;
 it('gives the child a real tty', function (): void {
     $session = Pty::spawn(['/bin/sh', '-c', 'tty']);
 
-    $output = drain($session, 2.0, '#/dev/#');
-    $session->wait();
-    $session->close();
-
-    expect($output)->toContain('/dev/');
+    try {
+        // Keep draining during startup: on Darwin even a small final write
+        // can delay child exit until its output has been consumed.
+        $pattern = '#'.preg_quote($session->ttyName(), '#').'#';
+        expect(drain($session, 10.0, $pattern))->toContain($session->ttyName());
+        expect($session->wait(2.0))->toBe(0);
+    } finally {
+        stopSession($session);
+    }
 });
 
 it('reports the slave device path', function (): void {
@@ -39,7 +43,7 @@ it('gives the child a controlling terminal', function (): void {
 
 it('delivers SIGWINCH on resize', function (): void {
     $session = Pty::spawn(
-        ['/bin/sh', '-c', 'trap "echo GOT-WINCH" WINCH; echo READY; sleep 10 & wait'],
+        [PHP_BINARY, __DIR__.'/Fixtures/watch-resize.php'],
         rows: 24,
         cols: 80,
     );
@@ -48,6 +52,7 @@ it('delivers SIGWINCH on resize', function (): void {
         expect(drain($session, 3.0, '/READY/'))->toContain('READY');
         $session->resize(40, 100);
         expect(drain($session, 2.0, '/GOT-WINCH/'))->toContain('GOT-WINCH');
+        expect($session->wait(2.0))->toBe(0);
     } finally {
         stopSession($session);
     }
